@@ -28,16 +28,17 @@ trap 'echo Error when executing ${BASH_COMMAND} at line ${LINENO}! >&2' ERR
 #   3. Copy the mode of the source path to the target path
 
 # Get inputs from command line arguments
-if [[ "$#" != 6 ]]; then
-    printf "Error: 'create-directories.bash' requires *six* args.\n" >&2
+if [[ "$#" != 7 ]]; then
+    printf "Error: 'create-directories.bash' requires *seven* args.\n" >&2
     exit 1
 fi
 sourceBase="$1"
-target="$2"
-user="$3"
-group="$4"
-mode="$5"
-debug="$6"
+sourcePath="$2"
+target="$3" # If this is "" then do not create it
+user="$4"
+group="$5"
+mode="$6"
+debug="$7"
 
 if (( "$debug" )); then
     set -o xtrace
@@ -45,15 +46,20 @@ fi
 
 # trim trailing slashes the root of all evil
 sourceBase="${sourceBase%/}"
+sourcePath="${sourcePath%/}"
 target="${target%/}"
 
 # check that the source exists and warn the user if it doesn't, then
 # create them with the specified permissions
-realSource="$(realpath -m "$sourceBase$target")"
+realSource="$(realpath -m "$sourceBase$sourcePath")"
 if [[ ! -d "$realSource" ]]; then
     printf "Warning: Source directory '%s' does not exist; it will be created for you with the following permissions: owner: '%s:%s', mode: '%s'.\n" "$realSource" "$user" "$group" "$mode"
     mkdir --mode="$mode" "$realSource"
     chown "$user:$group" "$realSource"
+fi
+
+if [[ $target == "" ]]; then
+  exit 0
 fi
 
 [[ -d "$target" ]] || mkdir "$target"

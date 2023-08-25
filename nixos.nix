@@ -29,6 +29,9 @@ let
     optionalString
     elem
     mapAttrs
+    tail
+    init
+    length
     ;
 
   inherit (pkgs.callPackage ./lib.nix { })
@@ -51,10 +54,10 @@ let
   '';
 
   # Create fileSystems bind mount entry.
-  mkBindMountNameValuePair = { dirPath, persistentStoragePath, hideMount, ... }: {
+  mkBindMountNameValuePair = { dirPath, persistentStoragePath, hideMount, persistentPath, ... }: {
     name = concatPaths [ "/" dirPath ];
     value = {
-      device = concatPaths [ persistentStoragePath dirPath ];
+      device = concatPaths [ persistentStoragePath persistentPath ];
       noCheck = true;
       options = [ "bind" ]
         ++ optional hideMount "x-gvfs-hide";
@@ -89,6 +92,7 @@ in
           submodule (
             { name, config, ... }:
             let
+              persistentStorageConfig = cfg.${name};
               defaultPerms = {
                 mode = "0755";
                 user = "root";
@@ -121,6 +125,15 @@ in
                       Enable debug trace output when running
                       scripts. You only need to enable this if asked
                       to.
+                    '';
+                  };
+                  persistentPath = mkOption {
+                    type = str;
+                    default = null;
+                    internal = true;
+                    description = ''
+                      The path a file/directory has inside the
+                      persistent storage.
                     '';
                   };
                 };
@@ -211,10 +224,12 @@ in
                   parentDirectory = mkDefault (defaultPerms // rec {
                     directory = dirOf config.file;
                     dirPath = directory;
+                    persistentPath = directory;
                     inherit (config) persistentStoragePath;
                     inherit defaultPerms;
                   });
                   filePath = mkDefault config.file;
+                  persistentPath = mkDefault config.file;
                 })
               ];
               rootDir = submodule ([
@@ -223,6 +238,7 @@ in
                 ({ config, ... }: {
                   defaultPerms = mkDefault defaultPerms;
                   dirPath = mkDefault config.directory;
+                  persistentPath = mkDefault config.directory;
                 })
               ] ++ (mapAttrsToList (n: v: { ${n} = mkDefault v; }) defaultPerms));
             in
@@ -258,12 +274,32 @@ in
                             { config, ... }:
                             {
                               parentDirectory = rec {
-                                directory = dirOf config.file;
-                                dirPath = concatPaths [ config.home directory ];
+                                directory =
+                                  if persistentStorageConfig.users.${name}.removePrefixDirectory then
+                                    if length (tail (splitPath [ (dirOf config.file) ])) != 0 then
+                                      dirListToPath (tail (splitPath [ (dirOf config.file) ]))
+                                    else
+                                      ""
+                                  else
+                                    dirOf config.file;
+                                dirPath = concatPaths [
+                                  config.home
+                                  directory
+                                ];
+                                persistentPath = concatPaths [ config.home (dirOf config.file) ];
                                 inherit (config) persistentStoragePath home;
                                 defaultPerms = userDefaultPerms;
                               };
-                              filePath = concatPaths [ config.home config.file ];
+                              filePath = concatPaths [
+                                config.home
+                                (
+                                  if persistentStorageConfig.users.${name}.removePrefixDirectory then
+                                    dirListToPath (tail (splitPath [ config.file ]))
+                                  else
+                                    config.file
+                                )
+                              ];
+                              persistentPath = concatPaths [ config.home config.file ];
                             };
                           userFile = submodule [
                             commonOpts
@@ -278,7 +314,16 @@ in
                             { config, ... }:
                             {
                               defaultPerms = mkDefault userDefaultPerms;
-                              dirPath = concatPaths [ config.home config.directory ];
+                              dirPath = concatPaths [
+                                config.home
+                                (
+                                  if persistentStorageConfig.users.${name}.removePrefixDirectory then
+                                    dirListToPath (tail (splitPath [ config.directory ]))
+                                  else
+                                    config.directory
+                                )
+                              ];
+                              persistentPath = concatPaths [ config.home config.directory ];
                             };
                           userDir = submodule ([
                             commonOpts
@@ -290,6 +335,22 @@ in
                         {
                           options =
                             {
+                              removePrefixDirectory = mkOption {
+                                type = types.bool;
+                                default = false;
+                                example = true;
+                                description = ''
+                                  Note: This is mainly useful if you have a dotfiles
+                                  repo structured for use with GNU Stow; if you don't,
+                                  you can likely ignore it.
+
+                                  Whether to remove the first directory when linking
+                                  or mounting; e.g. for the path
+                                  <literal>"screen/.screenrc"</literal>, the
+                                  <literal>screen/</literal> is ignored for the path
+                                  linked to in your home directory.
+                                '';
+                              };
                               # Needed because defining fileSystems
                               # based on values from users.users
                               # results in infinite recursion.
@@ -473,9 +534,9 @@ in
   config = {
     systemd.services =
       let
-        mkPersistFileService = { filePath, persistentStoragePath, enableDebugging, ... }:
+        mkPersistFileService = { filePath, persistentStoragePath, enableDebugging, persistentPath, ... }:
           let
-            targetFile = escapeShellArg (concatPaths [ persistentStoragePath filePath ]);
+            targetFile = escapeShellArg (concatPaths [ persistentStoragePath persistentPath ]);
             mountPoint = escapeShellArg filePath;
           in
           {
@@ -525,12 +586,20 @@ in
           , group
           , mode
           , enableDebugging
+          , persistentPath
+          , home
           , ...
           }:
           let
             args = [
               persistentStoragePath
-              dirPath
+              persistentPath
+              (
+                if dirPath == home && persistentPath != dirPath then
+                  ""
+                else
+                  dirPath
+              )
               user
               group
               mode
@@ -572,6 +641,7 @@ in
                     homeDir = {
                       directory = dir.home;
                       dirPath = dir.home;
+                      persistentPath = dir.home;
                       home = null;
                       mode = "0700";
                       user = dir.user;
@@ -600,13 +670,34 @@ in
                 # Create a new directory item from `dir`, the child
                 # directory item to inherit properties from and
                 # `path`, the parent directory path.
-                mkParent = dir: path: {
-                  directory = path;
-                  dirPath =
-                    if dir.home != null then
-                      concatPaths [ dir.home path ]
+                mkParent = dir: path:
+                let
+                  targetPath =
+                    if dir.dirPath != dir.persistentPath then
+                      if dirListToPath (tail (splitPath [ path ])) != "" then
+                        concatPaths [ dir.home (dirListToPath (tail (splitPath [ path ]))) ]
+                      else
+                        ""
                     else
-                      path;
+                      if dir.home != null then
+                        concatPaths [ dir.home path ]
+                      else
+                        path;
+                in
+                {
+                  directory = path;
+                  dirPath = targetPath;
+                  persistentPath =
+                    if dir.dirPath != dir.persistentPath then
+                      if targetPath == "" then
+                        concatPaths [ dir.home path ]
+                      else
+                        concatPaths [ "/" (dirListToPath (init (splitPath [ dir.persistentPath ]))) ]
+                    else
+                      if dir.home != null then
+                        concatPaths [ dir.home path ]
+                      else
+                        path;
                   inherit (dir) persistentStoragePath home enableDebugging;
                   inherit (dir.defaultPerms) user group mode;
                 };
@@ -635,10 +726,10 @@ in
             exit $_status
           '';
 
-        mkPersistFile = { filePath, persistentStoragePath, enableDebugging, ... }:
+        mkPersistFile = { filePath, persistentStoragePath, enableDebugging, persistentPath, ... }:
           let
             mountPoint = filePath;
-            targetFile = concatPaths [ persistentStoragePath filePath ];
+            targetFile = concatPaths [ persistentStoragePath persistentPath ];
             args = escapeShellArgs [
               mountPoint
               targetFile
