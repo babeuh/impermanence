@@ -675,7 +675,10 @@ in
                   targetPath =
                     if dir.dirPath != dir.persistentPath then
                       if dirListToPath (tail (splitPath [ path ])) != "" then
-                        concatPaths [ dir.home (dirListToPath (tail (splitPath [ path ]))) ]
+                        if dir.home != null then
+                          concatPaths [ dir.home (dirListToPath (tail (splitPath [ path ]))) ]
+                        else
+                          (dirListToPath (tail (splitPath [ path ])))
                       else
                         ""
                     else
