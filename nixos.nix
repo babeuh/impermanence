@@ -59,7 +59,7 @@ let
     value = {
       device = concatPaths [ persistentStoragePath persistentPath ];
       noCheck = true;
-      options = [ "bind" ]
+      options = [ "bind" "X-fstrim.notrim" ]
         ++ optional hideMount "x-gvfs-hide";
       depends = [ persistentStoragePath ];
     };
