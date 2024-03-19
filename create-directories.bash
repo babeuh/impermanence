@@ -44,11 +44,6 @@ if (( "$debug" )); then
     set -o xtrace
 fi
 
-# trim trailing slashes the root of all evil
-sourceBase="${sourceBase%/}"
-sourcePath="${sourcePath%/}"
-target="${target%/}"
-
 # check that the source exists and warn the user if it doesn't, then
 # create them with the specified permissions
 realSource="$(realpath -m "$sourceBase$sourcePath")"
